@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NWS Official Weather Dashboard</title>
+
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Leaflet CSS & JS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        /* Custom Scrollbar for the hourly forecast */
+        .scrollbar-hide::-webkit-scrollbar {
+            display: none;
+        }
+
+        .scrollbar-hide {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+
+        .glass-panel {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .spin-slow {
+            animation: spin 3s linear infinite;
+        }
+
+        @keyframes spin {
+            from {
+                transform: rotate(0deg);
+            }
+
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        @keyframes bolt-strike {
+
+            0%,
+            70%,
+            100% {
+                opacity: 0;
+            }
+
+            75%,
+            85% {
+                opacity: 1;
+            }
+        }
+
+        .loading-cloud path:last-child {
+            animation: bolt-strike 1.5s ease-in-out infinite;
+            stroke: #facc15;
+            /* Tailwind yellow-400 */
+        }
+    </style>
+</head>
+
+<body class="bg-slate-900 text-slate-100 antialiased">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // --- Icon Component Helper ---
+        const Icon = ({ name, size = 24, className = "" }) => {
+            const wrapperRef = useRef(null);
+
+            useEffect(() => {
+                if (!window.lucide || !wrapperRef.current) return;
+
+                const tempIcon = document.createElement('i');
+                tempIcon.setAttribute('data-lucide', name);
+
+                wrapperRef.current.innerHTML = '';
+                wrapperRef.current.appendChild(tempIcon);
+
+                window.lucide.createIcons({
+                    root: wrapperRef.current,
+                    nameAttr: 'data-lucide',
+                    attrs: {
+                        class: className,
+                        width: size,
+                        height: size,
+                        "stroke-width": 2
+                    }
+                });
+            }, [name, size, className]);
+
+            return <span ref={wrapperRef} className="inline-flex items-center justify-center"></span>;
+        };
+
+        // --- Helper: NWS Weather String to Icon/Label ---
+        const getNWSWeatherInfo = (shortForecast, isDaytime) => {
+            const text = (shortForecast || "").toLowerCase();
+
+            if (text.includes("thunder")) return { icon: 'cloud-lightning', label: 'Thunderstorms', color: 'text-yellow-500' };
+            if (text.includes("snow") || text.includes("flurries")) return { icon: 'snowflake', label: 'Snow', color: 'text-white' };
+            if (text.includes("rain") || text.includes("drizzle") || text.includes("showers")) return { icon: 'cloud-rain', label: 'Rain', color: 'text-blue-500' };
+            if (text.includes("fog")) return { icon: 'cloud-fog', label: 'Fog', color: 'text-gray-400' };
+            if (text.includes("cloud") || text.includes("overcast")) {
+                if (text.includes("partly") || text.includes("mostly sunny")) {
+                    return { icon: isDaytime ? 'cloud-sun' : 'cloud-moon', label: 'Partly Cloudy', color: 'text-blue-200' };
+                }
+                return { icon: 'cloud', label: 'Cloudy', color: 'text-gray-300' };
+            }
+            if (text.includes("sunny") || text.includes("clear")) {
+                return { icon: isDaytime ? 'sun' : 'moon', label: isDaytime ? 'Sunny' : 'Clear', color: isDaytime ? 'text-yellow-400' : 'text-slate-300' };
+            }
+
+            return { icon: 'cloud-sun', label: shortForecast, color: 'text-gray-400' };
+        };
+
+        // --- Helper: Unit Conversion ---
+        const cToF = (c) => c === null ? null : (c * 9 / 5) + 32;
+        const kmhToMph = (k) => k === null ? null : k * 0.621371;
+
+        // --- Component: Radar Map ---
+        const RadarMap = ({ lat, lon }) => {
+            const mapRef = useRef(null);
+            const mapInstanceRef = useRef(null);
+
+            useEffect(() => {
+                if (!mapRef.current || mapInstanceRef.current) return;
+
+                const darkMap = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+                    subdomains: 'abcd',
+                    maxZoom: 19
+                });
+
+                const streetMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '&copy; OpenStreetMap contributors',
+                    maxZoom: 19
+                });
+
+                const map = L.map(mapRef.current, {
+                    center: [lat, lon],
+                    zoom: 7,
+                    zoomControl: true,
+                    attributionControl: false,
+                    layers: [darkMap]
+                });
+
+                const nexrad = L.tileLayer.wms("https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi", {
+                    layers: 'nexrad-n0r-900913',
+                    format: 'image/png',
+                    transparent: true,
+                    attribution: "Weather data © 2024 NWS",
+                    opacity: 0.65
+                });
+
+                const goesSatellite = L.tileLayer.wms("https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/conus_ir.cgi", {
+                    layers: 'goes_conus_ir',
+                    format: 'image/png',
+                    transparent: true,
+                    attribution: "GOES Satellite",
+                    opacity: 0.5
+                });
+
+                const warnings = L.tileLayer.wms("https://mesonet.agron.iastate.edu/cgi-bin/wms/us/wwa.cgi", {
+                    layers: 'warnings_c',
+                    format: 'image/png',
+                    transparent: true,
+                    attribution: "NWS Watches/Warnings",
+                    opacity: 0.6
+                });
+
+                nexrad.addTo(map);
+
+                const baseMaps = {
+                    "Dark Mode": darkMap,
+                    "Street Map": streetMap
+                };
+
+                const overlayMaps = {
+                    "NEXRAD Radar": nexrad,
+                    "GOES Satellite (IR)": goesSatellite,
+                    "NWS Watches/Warnings": warnings
+                };
+
+                L.control.layers(baseMaps, overlayMaps, { position: 'topright' }).addTo(map);
+
+                // Marker added without the "Your Location" popup
+                L.marker([lat, lon]).addTo(map);
+
+                mapInstanceRef.current = map;
+
+                return () => {
+                    map.remove();
+                    mapInstanceRef.current = null;
+                };
+            }, []);
+
+            useEffect(() => {
+                if (mapInstanceRef.current) {
+                    mapInstanceRef.current.setView([lat, lon], 8);
+                }
+            }, [lat, lon]);
+
+            return (
+                <div ref={mapRef} className="w-full h-full z-0 absolute inset-0" />
+            );
+        };
+
+        // --- Weather Dashboard Component ---
+        const WeatherDashboard = () => {
+            const [coords, setCoords] = useState({ lat: 38.9585, lon: -95.2730 }); // Default: Lawrence, KS
+            const [currentWeather, setCurrentWeather] = useState(null);
+            const [forecast, setForecast] = useState(null);
+            const [hourlyForecast, setHourlyForecast] = useState(null);
+            const [aqi, setAqi] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [statusMessage, setStatusMessage] = useState("Initializing...");
+            const [error, setError] = useState(null);
+            const [refreshTrigger, setRefreshTrigger] = useState(0);
+            const [mapProvider, setMapProvider] = useState('windy'); // 'nws' or 'windy'
+            const [alerts, setAlerts] = useState([]);
+
+            useEffect(() => {
+                if (navigator.geolocation) {
+                    navigator.geolocation.getCurrentPosition(
+                        (position) => {
+                            setCoords({
+                                lat: position.coords.latitude,
+                                lon: position.coords.longitude
+                            });
+                        },
+                        (err) => console.warn("Location access denied, using default.", err)
+                    );
+                }
+            }, []);
+
+            useEffect(() => {
+                const fetchNWSData = async () => {
+                    setLoading(true);
+                    setError(null);
+
+                    try {
+                        // NWS API requires a polite User-Agent
+                        const headers = {
+                            'User-Agent': '(myweatherdashboard.com, contact@myweatherdashboard.com)',
+                            'Accept': 'application/geo+json'
+                        };
+
+                        // 1. Get Metadata (Grid X/Y, Forecast Office)
+                        setStatusMessage("Locating NWS Forecast Office...");
+                        const pointsRes = await fetch(`https://api.weather.gov/points/${coords.lat},${coords.lon}`, { headers });
+                        if (!pointsRes.ok) throw new Error("Could not find NWS data for this location.");
+                        const pointsData = await pointsRes.json();
+                        const props = pointsData.properties;
+
+                        // 2. Fetch Data in Parallel (Forecast, Hourly, Stations)
+                        setStatusMessage("Fetching official NWS forecast...");
+
+                        // We need stations to get REAL current temp (forecast endpoints are predictions, not observations)
+                        const stationsUrl = props.observationStations;
+
+                        const [dailyRes, hourlyRes, stationsRes, aqiRes, alertsRes] = await Promise.all([
+                            fetch(props.forecast, { headers }),
+                            fetch(props.forecastHourly, { headers }),
+                            fetch(stationsUrl, { headers }),
+                            fetch(`https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${coords.lat}&longitude=${coords.lon}&current=us_aqi&t=${Date.now()}`),
+                            fetch(`https://api.weather.gov/alerts/active?point=${coords.lat},${coords.lon}`, { headers })
+                        ]);
+
+                        const dailyData = await dailyRes.json();
+                        const hourlyData = await hourlyRes.json();
+                        const stationsData = await stationsRes.json();
+                        const aqiData = await aqiRes.json();
+                        const alertsData = await alertsRes.json();
+
+                        // 3. Get Current Conditions from Nearest Station
+                        setStatusMessage("Getting latest station observation...");
+                        let currentObsData = null;
+
+                        // Try the first station (usually closest)
+                        if (stationsData.features && stationsData.features.length > 0) {
+                            const stationId = stationsData.features[0].properties.stationIdentifier;
+                            // Fetch observations for this station
+                            const obsRes = await fetch(`https://api.weather.gov/stations/${stationId}/observations/latest`, { headers });
+                            if (obsRes.ok) {
+                                currentObsData = await obsRes.json();
+                            }
+                        }
+
+                        // Set State
+                        setForecast(dailyData.properties.periods);
+                        setHourlyForecast(hourlyData.properties.periods);
+                        setAqi(aqiData);
+                        setAlerts(alertsData.features || []);
+                        setCurrentWeather(currentObsData ? currentObsData.properties : null);
+
+                    } catch (err) {
+                        console.error(err);
+                        setError("Failed to retrieve NWS data. The service might be busy. Please try again.");
+                    } finally {
+                        setLoading(false);
+                    }
+                };
+
+                fetchNWSData();
+            }, [coords, refreshTrigger]);
+
+            const handleRefresh = () => {
+                setRefreshTrigger(prev => prev + 1);
+            };
+
+            const getAqiColor = (val) => {
+                if (val <= 50) return 'bg-emerald-500';
+                if (val <= 100) return 'bg-yellow-500';
+                if (val <= 150) return 'bg-orange-500';
+                if (val <= 200) return 'bg-red-500';
+                return 'bg-purple-500';
+            };
+
+            if (loading) {
+                return (
+                    <div className="flex flex-col items-center justify-center h-screen bg-slate-900 text-white space-y-6">
+                        <div className="text-blue-400 loading-cloud drop-shadow-lg">
+                            <Icon name="cloud-lightning" size={64} />
+                        </div>
+                        <p className="text-lg font-medium text-slate-300 animate-pulse">{statusMessage}</p>
+                    </div>
+                );
+            }
+
+            if (error) {
+                return (
+                    <div className="flex flex-col items-center justify-center h-screen bg-slate-900 text-red-400 gap-4 p-6 text-center">
+                        <Icon name="alert-triangle" size={48} />
+                        <p className="text-xl font-semibold">Connection Error</p>
+                        <p>{error}</p>
+                        <button onClick={handleRefresh} className="px-6 py-2 bg-slate-700 rounded-lg text-white hover:bg-slate-600 transition-colors">
+                            Retry Connection
+                        </button>
+                    </div>
+                );
+            }
+
+            // --- Data Processing for UI ---
+            // Dew Point (Handling Metric -> Imperial conversion from NWS)
+            const curDewPointC = currentWeather?.dewpoint?.value;
+            const curDewPointF = curDewPointC != null ? cToF(curDewPointC) : null;
+            const displayDewPoint = curDewPointF != null ? `${Math.round(curDewPointF)}°F` : "N/A";
+
+            // Current Conditions (Handling Metric -> Imperial conversion from NWS)
+            const curTempC = currentWeather?.temperature?.value;
+            // Fallback to hourly forecast temp if observation is missing
+            const curTempF = curTempC != null ? cToF(curTempC) : (hourlyForecast ? hourlyForecast[0].temperature : null);
+
+            const curWindKmh = currentWeather?.windSpeed?.value;
+            // Fallback to hourly forecast wind if observation is missing
+            const curWindMph = curWindKmh != null ? kmhToMph(curWindKmh) : (hourlyForecast ? parseInt(hourlyForecast[0].windSpeed) : 0);
+
+            // Prioritize Hourly Forecast for description/icon because observation descriptions are often missing/null
+            const curWeatherText = (hourlyForecast && hourlyForecast[0].shortForecast) ? hourlyForecast[0].shortForecast : (currentWeather?.textDescription || "N/A");
+            const isDaytime = hourlyForecast ? hourlyForecast[0].isDaytime : true;
+            const curWeatherInfo = getNWSWeatherInfo(curWeatherText, isDaytime);
+
+            const currentAqiValue = aqi?.current?.us_aqi || 0;
+
+            // Hourly (First 10 hours)
+            const next10Hours = hourlyForecast ? hourlyForecast.slice(0, 10) : [];
+
+            // Daily Processing: NWS gives "Wednesday", "Wednesday Night". We need to merge them.
+            // Simplified: We'll take the periods and just display the first 7-10 "Daytime" periods or chunks.
+            // A more robust way for "Next 10 Days" visual:
+            const processedDaily = [];
+            if (forecast) {
+                let currentDay = null;
+
+                forecast.forEach((period) => {
+                    // Try to group by day name (e.g., "Wednesday" and "Wednesday Night")
+                    // If period is daytime, start a new day entry
+                    if (period.isDaytime) {
+                        currentDay = {
+                            name: period.name,
+                            max: period.temperature,
+                            icon: period.shortForecast,
+                            precipProb: period.probabilityOfPrecipitation.value || 0,
+                            shortForecast: period.shortForecast,
+                            isDaytime: true
+                        };
+                        processedDaily.push(currentDay);
+                    } else if (currentDay) {
+                        // If it's night, add min temp to the current day
+                        currentDay.min = period.temperature;
+                    } else {
+                        // If we start with a night period (e.g. Tonight), treat it as a partial day or skip
+                        // For this UI, let's just make a "Today/Tonight" entry if it's the first one
+                        if (processedDaily.length === 0 && !period.isDaytime) {
+                            processedDaily.push({
+                                name: "Tonight",
+                                max: null, // No high for tonight
+                                min: period.temperature,
+                                icon: period.shortForecast,
+                                precipProb: period.probabilityOfPrecipitation.value || 0,
+                                shortForecast: period.shortForecast,
+                                isDaytime: false
+                            });
+                        }
+                    }
+                });
+            }
+
+            return (
+                <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto space-y-6">
+
+                    {/* Header */}
+                    <header className="flex flex-col md:flex-row justify-between items-start md:items-end pb-4 border-b border-slate-700 gap-4">
+                        <div>
+                            <h1 className="text-3xl font-bold text-white flex items-center gap-2">
+                                <Icon name="cloud-lightning" className="text-blue-400" />
+                                And Now... The Weather
+                            </h1>
+                            <p className="text-slate-400 flex items-center gap-2 text-sm mt-1">
+                                <Icon name="map-pin" size={14} />
+                                {coords.lat.toFixed(2)}°N, {coords.lon.toFixed(2)}°W
+                            </p>
+                        </div>
+                        <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-end">
+                            <button
+                                onClick={handleRefresh}
+                                className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm rounded-lg transition-colors border border-slate-700"
+                            >
+                                <Icon name="refresh-cw" size={16} />
+                                Refresh
+                            </button>
+                            <div className="text-right hidden md:block">
+                                <p className="text-slate-400 text-xs">Primary Source:</p>
+                                <p className="text-xs font-semibold text-blue-300">weather.gov (API)</p>
+                            </div>
+                        </div>
+                    </header>
+
+                    {/* Active Warnings/Alerts Banner */}
+                    {alerts.length > 0 && (
+                        <div className="space-y-2">
+                            {alerts.map((alert, idx) => (
+                                <div key={idx} className="bg-red-950/80 border border-red-500/50 p-4 rounded-xl text-red-200 flex items-start gap-3 shadow-lg">
+                                    <Icon name="alert-octagon" className="text-red-400 shrink-0 mt-0.5" size={24} />
+                                    <div>
+                                        <h4 className="font-bold text-red-100 text-lg">{alert.properties.event}</h4>
+                                        <p className="text-sm text-red-200 mt-1">{alert.properties.headline}</p>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    {/* Top Section: Current Stats & Radar */}
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+                        {/* Current Conditions Card */}
+                        <div className="glass-panel rounded-xl p-6 flex flex-col justify-between lg:col-span-1 h-full min-h-[300px]">
+                            <div>
+                                <div className="flex items-center gap-2 mb-2">
+                                    <span className="px-2 py-1 rounded bg-blue-600 text-xs font-bold text-white">LIVE OBS</span>
+                                    <span className="text-xs text-slate-400">{new Date().toLocaleTimeString()}</span>
+                                </div>
+                                <div className="flex items-center gap-4">
+                                    <h2 className="text-6xl font-bold text-white tracking-tighter">
+                                        {curTempF !== null ? Math.round(curTempF) : "--"}°
+                                    </h2>
+                                    <div className="flex flex-col items-center">
+                                        <Icon name={curWeatherInfo.icon} size={48} className={curWeatherInfo.color} />
+                                        <span className="text-sm font-medium text-slate-300 text-center max-w-[100px] leading-tight mt-1">
+                                            {curWeatherText}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="space-y-4 mt-6">
+                                {/* AQI Indicator */}
+                                <div className="bg-slate-800/50 p-3 rounded-lg border border-slate-700">
+                                    <div className="flex justify-between items-center mb-2">
+                                        <span className="text-sm text-slate-400 flex items-center gap-2">
+                                            <Icon name="wind" size={16} /> Air Quality (US AQI)
+                                        </span>
+                                        <span className="font-bold text-white">{currentAqiValue}</span>
+                                    </div>
+                                    <div className="w-full bg-slate-700 h-2 rounded-full overflow-hidden">
+                                        <div
+                                            className={`h-full ${getAqiColor(currentAqiValue)}`}
+                                            style={{ width: `${Math.min(currentAqiValue, 300) / 3}%` }}
+                                        ></div>
+                                    </div>
+                                    <p className="text-xs text-slate-500 mt-1 text-right">
+                                        Data: Open-Meteo/AirNow
+                                    </p>
+                                </div>
+
+                                {/* Wind Speed & Dew Point */}
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div className="flex justify-between items-center p-3 bg-slate-800/50 rounded-lg border border-slate-700">
+                                        <span className="text-sm text-slate-400 flex items-center gap-2">
+                                            <Icon name="flag" size={16} /> Wind
+                                        </span>
+                                        <span className="text-white font-medium">
+                                            {Math.round(curWindMph)} mph
+                                        </span>
+                                    </div>
+                                    <div className="flex justify-between items-center p-3 bg-slate-800/50 rounded-lg border border-slate-700">
+                                        <span className="text-sm text-slate-400 flex items-center gap-2">
+                                            <Icon name="droplet" size={16} /> Dew Pt
+                                        </span>
+                                        <span className="text-white font-medium">
+                                            {displayDewPoint}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Radar Map Container */}
+                        <div className="lg:col-span-2 h-[400px] lg:h-auto min-h-[400px] glass-panel rounded-xl overflow-hidden flex flex-col">
+                            <div className="flex justify-between items-center p-3 bg-slate-800/80 border-b border-slate-700 z-10">
+                                <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                                    <Icon name="map" size={16} className="text-blue-400" />
+                                    Interactive Map
+                                </h3>
+                                <div className="flex gap-2">
+                                    <button
+                                        onClick={() => setMapProvider('nws')}
+                                        className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${mapProvider === 'nws' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                                    >
+                                        NWS Layers
+                                    </button>
+                                    <button
+                                        onClick={() => setMapProvider('windy')}
+                                        className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${mapProvider === 'windy' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                                    >
+                                        Windy.com
+                                    </button>
+                                </div>
+                            </div>
+                            <div className="relative flex-grow w-full h-full z-0">
+                                {mapProvider === 'nws' ? (
+                                    <RadarMap lat={coords.lat} lon={coords.lon} />
+                                ) : (
+                                    <iframe
+                                        width="100%"
+                                        height="100%"
+                                        src={`https://embed.windy.com/embed.html?type=map&location=coordinates&metricRain=in&metricTemp=f&metricWind=mph&zoom=6&overlay=radar&product=radar&level=surface&lat=${coords.lat}&lon=${coords.lon}&sound=false`}
+                                        frameBorder="0"
+                                        title="Windy Map"
+                                        className="absolute inset-0"
+                                    ></iframe>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Middle Section: 10 Hour Forecast */}
+                    <div>
+                        <h3 className="text-xl font-semibold text-white mb-4 flex items-center gap-2">
+                            <Icon name="clock" size={20} className="text-blue-400" />
+                            Hourly Forecast
+                        </h3>
+                        <div className="glass-panel rounded-xl p-4 overflow-x-auto">
+                            <div className="flex gap-4 min-w-max">
+                                {next10Hours.length > 0 ? next10Hours.map((hour, idx) => {
+                                    const timeLabel = new Date(hour.startTime).toLocaleTimeString([], { hour: 'numeric', hour12: true });
+                                    const info = getNWSWeatherInfo(hour.shortForecast, hour.isDaytime);
+                                    return (
+                                        <div key={idx} className="flex flex-col items-center justify-center p-3 rounded-lg hover:bg-slate-800/50 transition-colors min-w-[100px] border border-transparent hover:border-slate-700">
+                                            <span className="text-slate-400 text-sm mb-2">{timeLabel}</span>
+                                            <Icon name={info.icon} size={28} className={`mb-2 ${info.color}`} />
+                                            <span className="text-xl font-bold text-white mb-1">{hour.temperature}°</span>
+                                            <div className="flex items-center gap-1 text-xs text-blue-300 font-medium h-4">
+                                                {(hour.probabilityOfPrecipitation.value > 0) && (
+                                                    <>
+                                                        <Icon name="droplets" size={10} />
+                                                        {hour.probabilityOfPrecipitation.value}%
+                                                    </>
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                }) : (
+                                    <div className="p-4 text-slate-400">Loading hourly data...</div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Bottom Section: 5-Day Forecast */}
+                    <div>
+                        <h3 className="text-xl font-semibold text-white mb-4 flex items-center gap-2">
+                            <Icon name="calendar-days" size={20} className="text-purple-400" />
+                            5-Day Forecast
+                        </h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+                            {processedDaily.slice(0, -2).length > 0 ? processedDaily.slice(0, -2).map((day, idx) => {
+                                const info = getNWSWeatherInfo(day.shortForecast, day.isDaytime);
+                                return (
+                                    <div key={idx} className="glass-panel p-4 rounded-xl flex flex-col border border-slate-700/50 hover:border-slate-500 transition-all">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <span className={`text-sm font-semibold ${idx === 0 ? 'text-blue-400' : 'text-slate-300'}`}>
+                                                {day.name}
+                                            </span>
+                                        </div>
+
+                                        <div className="flex items-center justify-between mb-3 mt-2">
+                                            <Icon name={info.icon} size={32} className={info.color} />
+                                            <div className="text-right">
+                                                {day.max !== null && <div className="text-xl font-bold text-white">{day.max}°</div>}
+                                                {day.min !== undefined && <div className="text-sm text-slate-500">{day.min}°</div>}
+                                            </div>
+                                        </div>
+
+                                        <div className="mt-auto pt-3 border-t border-slate-700/50 space-y-1">
+                                            <div className="flex justify-between text-xs text-slate-400">
+                                                <span>Precip</span>
+                                                <span className={day.precipProb > 20 ? 'text-blue-400 font-bold' : ''}>{day.precipProb}%</span>
+                                            </div>
+                                            <div className="text-[10px] text-slate-500 truncate mt-1">
+                                                {day.shortForecast}
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            }) : (
+                                <div className="col-span-full p-4 text-slate-400">Loading daily forecast...</div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- Navigation Bar ---
+        const NavBar = ({ currentPage, setCurrentPage }) => {
+            const [isLinksOpen, setIsLinksOpen] = useState(false);
+            const dropdownRef = useRef(null);
+
+            const navItems = [
+                { id: 'home', label: 'Home' },
+                { id: 'weather', label: 'Wx Dashboard' },
+                { id: 'about', label: 'About', icon: 'info' }
+            ];
+
+            const quickLinks = [
+                { name: "Weatherwise", url: "https://web.weatherwise.app/#map=6.89/38.536/-96.801" },
+                { name: "Lawrence Snow Page", url: "https://lawrenceks.gov/snow/" },
+                { name: "Lawrence Snow Plow Map", url: "https://cloud.samsara.com/o/8005241/live_share/coverage_map/Uyn3pxy4RkeXPZZ3gDAN?duration=1800&bounds=38.893307%2C-95.370546%2C39.039723%2C-95.149274&z=13" },
+                { name: "Lawrence Atlas", url: "https://atlas.lawrenceks.gov/" },
+                { name: "Lawrence Traffic Cameras", url: "https://lawrenceks.maps.arcgis.com/apps/instant/basic/index.html?appid=d7c108bb6a0c405aa50a3e8168102b75" },
+                { name: "KanDrive - KDOT", url: "https://www.kandrive.gov/@-95.41129,38.95146,11?show=normalCameras" }
+            ];
+
+            useEffect(() => {
+                const handleClickOutside = (event) => {
+                    if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+                        setIsLinksOpen(false);
+                    }
+                };
+                document.addEventListener('mousedown', handleClickOutside);
+                return () => document.removeEventListener('mousedown', handleClickOutside);
+            }, []);
+
+            return (
+                <nav className="glass-panel sticky top-0 z-50 border-b border-slate-700/50 backdrop-blur-md">
+                    <div className="max-w-7xl mx-auto px-4 md:px-8">
+                        <div className="flex items-center justify-between h-16">
+                            <div className="flex items-center gap-2 text-white font-bold text-xl">
+                                {currentPage === 'home' && <Icon name="home" className="text-blue-400" />}
+                                {currentPage === 'weather' && <Icon name="cloud-lightning" className="text-blue-400" />}
+                            </div>
+                            <div className="flex items-center gap-4">
+                                {navItems.map(item => (
+                                    <button
+                                        key={item.id}
+                                        onClick={() => setCurrentPage(item.id)}
+                                        className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${currentPage === item.id ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'}`}
+                                    >
+                                        {item.icon && <Icon name={item.icon} size={16} />}
+                                        {item.label}
+                                    </button>
+                                ))}
+
+                                {/* Links Dropdown */}
+                                <div
+                                    ref={dropdownRef}
+                                    className="relative"
+                                    onMouseEnter={() => setIsLinksOpen(true)}
+                                    onMouseLeave={() => setIsLinksOpen(false)}
+                                >
+                                    <button
+                                        onClick={() => setIsLinksOpen(!isLinksOpen)}
+                                        className="flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium text-slate-300 hover:bg-slate-700 hover:text-white transition-colors"
+                                    >
+                                        <Icon name="link" size={16} />
+                                        Links
+                                        <Icon name="chevron-down" size={14} className="text-slate-400" />
+                                    </button>
+
+                                    {isLinksOpen && (
+                                        <div className="absolute right-0 top-full mt-1 w-64 bg-slate-800/95 backdrop-blur-md border border-slate-700 rounded-xl shadow-2xl p-2 z-50">
+                                            <div className="text-[11px] font-semibold text-slate-400 px-3 py-1 uppercase tracking-wider border-b border-slate-700/60 mb-1">
+                                                Quick Links
+                                            </div>
+                                            {quickLinks.map((link, idx) => (
+                                                <a
+                                                    key={idx}
+                                                    href={link.url}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    className="flex items-center justify-between p-2 rounded-lg hover:bg-slate-700/70 text-slate-200 hover:text-white transition-colors group/item"
+                                                >
+                                                    <span className="text-sm font-medium">{link.name}</span>
+                                                    <Icon name="external-link" size={14} className="text-slate-400 group-hover/item:text-blue-400" />
+                                                </a>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </nav>
+            );
+        };
+
+        // --- Home Page Placeholder ---
+        const HomePage = () => {
+            return (
+                <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto">
+                    <div className="glass-panel p-8 rounded-xl border border-slate-700/50">
+                        <h2 className="text-3xl font-bold text-white mb-4 flex items-center gap-3">
+                            <Icon name="home" className="text-blue-400" size={32} />
+                            Welcome Home
+                        </h2>
+                        <p className="text-slate-300 leading-relaxed max-w-2xl text-lg">
+                            Welcome to the home page! Use the navigation bar above to view the weather dashboard or learn more about this site.
+                        </p>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- About Page Placeholder ---
+        const AboutPage = () => {
+            return (
+                <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto">
+                    <div className="glass-panel p-8 rounded-xl border border-slate-700/50">
+                        <h2 className="text-3xl font-bold text-white mb-4 flex items-center gap-3">
+                            <Icon name="info" className="text-blue-400" size={32} />
+                            About This Dashboard
+                        </h2>
+                        <p className="text-slate-300 leading-relaxed max-w-2xl text-lg">
+                            This is a single-page weather dashboard built with React, Tailwind CSS, and Leaflet.
+                            It pulls official live data and forecasts directly from the National Weather Service (NWS) APIs.
+                        </p>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- Main App Component ---
+        const App = () => {
+            const [currentPage, setCurrentPage] = useState('weather');
+
+            return (
+                <div className="flex flex-col min-h-screen bg-slate-900">
+                    <NavBar currentPage={currentPage} setCurrentPage={setCurrentPage} />
+                    <main className="flex-grow">
+                        {currentPage === 'home' && <HomePage />}
+                        {currentPage === 'weather' && <WeatherDashboard />}
+                        {currentPage === 'about' && <AboutPage />}
+                    </main>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+
+</html>
