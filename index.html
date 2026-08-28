@@ -143,8 +143,8 @@
             useEffect(() => {
                 if (!mapRef.current || mapInstanceRef.current) return;
 
-                const darkMap = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+                const darkMap = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=cb1_2ers_1_63b686dff7a6f59a836e44ec', {
+                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
                     subdomains: 'abcd',
                     maxZoom: 19
                 });
@@ -158,15 +158,15 @@
                     center: [lat, lon],
                     zoom: 7,
                     zoomControl: true,
-                    attributionControl: false,
+                    attributionControl: true,
                     layers: [darkMap]
                 });
 
-                const nexrad = L.tileLayer.wms("https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi", {
-                    layers: 'nexrad-n0r-900913',
+                const nexrad = L.tileLayer.wms("https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi", {
+                    layers: 'nexrad-n0q-900913',
                     format: 'image/png',
                     transparent: true,
-                    attribution: "Weather data © 2024 NWS",
+                    attribution: "Weather data © NWS / IEM",
                     opacity: 0.65
                 });
 
@@ -744,18 +744,93 @@
             );
         };
 
-        // --- Home Page Placeholder ---
+        // --- Home Page ---
         const HomePage = () => {
+            const [isPlayingAlert, setIsPlayingAlert] = useState(false);
+            const videoRef = useRef(null);
+
+            const playVideo = (src) => {
+                if (videoRef.current) {
+                    videoRef.current.src = src;
+                    videoRef.current.currentTime = 0;
+                    setIsPlayingAlert(true);
+                    const playPromise = videoRef.current.play();
+                    if (playPromise !== undefined) {
+                        playPromise.catch(err => {
+                            console.error("Video playback failed:", err);
+                        });
+                    }
+                }
+            };
+
+            const handleBlackAlert = () => playVideo("Voyager copy AE Flavorai.webm");
+            const handleFirePhasers = () => playVideo("Ent D.webm");
+            const handleCoffeeBlack = () => playVideo("Voy.webm");
+
+            const handleVideoEnded = () => {
+                setIsPlayingAlert(false);
+            };
+
             return (
-                <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto">
-                    <div className="glass-panel p-8 rounded-xl border border-slate-700/50">
-                        <h2 className="text-3xl font-bold text-white mb-4 flex items-center gap-3">
-                            <Icon name="home" className="text-blue-400" size={32} />
-                            Welcome Home
-                        </h2>
-                        <p className="text-slate-300 leading-relaxed max-w-2xl text-lg">
-                            Welcome to the home page! Use the navigation bar above to view the weather dashboard or learn more about this site.
-                        </p>
+                <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto relative">
+                    {/* Transparent Video Overlay for Alert Videos */}
+                    <div
+                        className={`fixed inset-0 z-50 pointer-events-none flex items-center justify-center transition-opacity duration-300 ${isPlayingAlert ? 'opacity-100' : 'opacity-0'}`}
+                    >
+                        <video
+                            ref={videoRef}
+                            playsInline
+                            onEnded={handleVideoEnded}
+                            className="max-w-full max-h-full object-contain"
+                        />
+                    </div>
+
+                    <div className="glass-panel p-8 rounded-xl border border-slate-700/50 flex flex-col items-start gap-6">
+                        <div>
+                            <h2 className="text-3xl font-bold text-white mb-4 flex items-center gap-3">
+                                <Icon name="home" className="text-blue-400" size={32} />
+                                Welcome Home
+                            </h2>
+                            <p className="text-slate-300 leading-relaxed max-w-2xl text-lg">
+                                Welcome to the home page! Use the navigation bar above to view the weather dashboard or learn more about this site.
+                            </p>
+                        </div>
+
+                        {/* Interactive Buttons */}
+                        <div className="pt-4 border-t border-slate-700/50 w-full flex flex-wrap gap-4 items-center">
+                            <button
+                                onClick={handleBlackAlert}
+                                className="px-6 py-3 bg-red-950/80 hover:bg-red-900 border border-red-600/60 hover:border-red-500 text-red-100 font-bold uppercase tracking-wider rounded-xl shadow-lg shadow-red-950/50 hover:shadow-red-900/50 transition-all duration-200 flex items-center gap-3 active:scale-95 group"
+                            >
+                                <span className="relative flex h-3 w-3">
+                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                                    <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+                                </span>
+                                <span>black alert</span>
+                            </button>
+
+                            <button
+                                onClick={handleFirePhasers}
+                                className="px-6 py-3 bg-amber-950/80 hover:bg-amber-900 border border-amber-600/60 hover:border-amber-500 text-amber-100 font-bold uppercase tracking-wider rounded-xl shadow-lg shadow-amber-950/50 hover:shadow-amber-900/50 transition-all duration-200 flex items-center gap-3 active:scale-95 group"
+                            >
+                                <span className="relative flex h-3 w-3">
+                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                                    <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
+                                </span>
+                                <span>Fire Phasers!</span>
+                            </button>
+
+                            <button
+                                onClick={handleCoffeeBlack}
+                                className="px-6 py-3 bg-stone-900 hover:bg-stone-800 border border-amber-700/60 hover:border-amber-500 text-amber-100 font-bold uppercase tracking-wider rounded-xl shadow-lg shadow-stone-950/50 hover:shadow-amber-950/50 transition-all duration-200 flex items-center gap-3 active:scale-95 group"
+                            >
+                                <span className="relative flex h-3 w-3">
+                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                                    <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-600"></span>
+                                </span>
+                                <span>Coffee, Black</span>
+                            </button>
+                        </div>
                     </div>
                 </div>
             );
