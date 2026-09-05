@@ -73,6 +73,25 @@
             stroke: #facc15;
             /* Tailwind yellow-400 */
         }
+
+        /* Pollen tooltip styling */
+        .pollen-tooltip-wrapper {
+            position: relative;
+        }
+
+        .pollen-tooltip {
+            display: none;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.15s ease-in-out;
+        }
+
+        .pollen-tooltip-wrapper:hover .pollen-tooltip,
+        .pollen-tooltip-wrapper:focus-within .pollen-tooltip {
+            display: flex;
+            opacity: 1;
+            pointer-events: auto;
+        }
     </style>
 </head>
 
@@ -223,9 +242,393 @@
             );
         };
 
+        // --- Pollen Forecast Component ---
+        const PollenForecast = ({ coords, refreshTrigger }) => {
+            const [pollenData, setPollenData] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState(null);
+            const [cacheMeta, setCacheMeta] = useState(null);
+
+            // Strict caching constants
+            const CACHE_KEY = 'pollen_data_cache';
+            const TIMESTAMP_KEY = 'pollen_data_timestamp';
+            const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
+            const GOOGLE_API_KEY = "AIzaSyBHWnoSE6i_sguG9W2MKI1tU08wI1IJhdo";
+
+            // Fallback sample generator if API network call fails and no cache is present yet
+            const generateFallbackData = (lat, lon) => {
+                const days = [];
+                const now = new Date();
+                const samplePlants = [
+                    { code: "RAGWEED", displayName: "Ragweed", inSeason: true, plantDescription: { type: "WEED" } },
+                    { code: "NETTLE", displayName: "Nettle", inSeason: true, plantDescription: { type: "WEED" } },
+                    { code: "MUGWORT", displayName: "Mugwort", inSeason: false, plantDescription: { type: "WEED" } },
+                    { code: "TIMOTHY", displayName: "Timothy Grass", inSeason: true, plantDescription: { type: "GRASS" } },
+                    { code: "BERMUDA", displayName: "Bermuda Grass", inSeason: false, plantDescription: { type: "GRASS" } },
+                    { code: "BIRCH", displayName: "Birch", inSeason: false, plantDescription: { type: "TREE" } },
+                    { code: "OAK", displayName: "Oak", inSeason: false, plantDescription: { type: "TREE" } },
+                    { code: "CEDAR", displayName: "Cedar", inSeason: true, plantDescription: { type: "TREE" } }
+                ];
+
+                for (let i = 0; i < 5; i++) {
+                    const d = new Date(now.getTime() + i * 24 * 60 * 60 * 1000);
+                    // Realistic early autumn profile: High weed (Ragweed), Low grass, Very low tree
+                    const weedUpi = ((i % 2 === 0) ? 4 : 3);
+                    const grassUpi = ((i % 3 === 0) ? 2 : 1);
+                    const treeUpi = 1;
+
+                    days.push({
+                        date: {
+                            year: d.getFullYear(),
+                            month: d.getMonth() + 1,
+                            day: d.getDate()
+                        },
+                        pollenTypeInfo: [
+                            {
+                                code: "GRASS",
+                                displayName: "Grass",
+                                inSeason: true,
+                                indexInfo: {
+                                    code: "UPI",
+                                    displayName: "Universal Pollen Index",
+                                    value: grassUpi,
+                                    category: grassUpi > 2 ? "Moderate" : "Low"
+                                }
+                            },
+                            {
+                                code: "TREE",
+                                displayName: "Tree",
+                                inSeason: true,
+                                indexInfo: {
+                                    code: "UPI",
+                                    displayName: "Universal Pollen Index",
+                                    value: treeUpi,
+                                    category: "Very Low"
+                                }
+                            },
+                            {
+                                code: "WEED",
+                                displayName: "Weed",
+                                inSeason: true,
+                                indexInfo: {
+                                    code: "UPI",
+                                    displayName: "Universal Pollen Index",
+                                    value: weedUpi,
+                                    category: weedUpi >= 4 ? "High" : "Moderate"
+                                }
+                            }
+                        ],
+                        plantInfo: samplePlants
+                    });
+                }
+                return { dailyInfo: days };
+            };
+
+            useEffect(() => {
+                const fetchPollen = async () => {
+                    setLoading(true);
+                    setError(null);
+
+                    const cachedDataStr = localStorage.getItem(CACHE_KEY);
+                    const cachedTimestampStr = localStorage.getItem(TIMESTAMP_KEY);
+
+                    // 1. Check if valid cache exists and is less than 24h old (Strict Caching)
+                    if (cachedDataStr && cachedTimestampStr) {
+                        const timestamp = parseInt(cachedTimestampStr, 10);
+                        const age = Date.now() - timestamp;
+                        if (!isNaN(timestamp) && age < CACHE_TTL) {
+                            try {
+                                const parsed = JSON.parse(cachedDataStr);
+                                if (parsed && parsed.dailyInfo && parsed.dailyInfo.length > 0) {
+                                    setPollenData(parsed);
+                                    setCacheMeta({
+                                        cached: true,
+                                        stale: false,
+                                        ageHours: Math.max(0, Math.floor(age / (60 * 60 * 1000))),
+                                        timestamp
+                                    });
+                                    setLoading(false);
+                                    return; // BYPASS NETWORK FETCH COMPLETELY
+                                }
+                            } catch (err) {
+                                console.warn("Pollen cache parse error, fetching fresh data", err);
+                            }
+                        }
+                    }
+
+                    // 2. Fetch fresh data from Google Pollen API endpoint
+                    try {
+                        const apiKey = localStorage.getItem('google_pollen_api_key') || GOOGLE_API_KEY;
+                        const url = `https://pollen.googleapis.com/v1/forecast:lookup?key=${apiKey}&location.latitude=${coords.lat}&location.longitude=${coords.lon}&days=5&languageCode=en`;
+                        const res = await fetch(url);
+                        if (!res.ok) {
+                            throw new Error(`Google Pollen API responded with HTTP ${res.status}`);
+                        }
+                        const data = await res.json();
+                        if (!data.dailyInfo || data.dailyInfo.length === 0) {
+                            throw new Error("No daily pollen data returned");
+                        }
+
+                        // Write to localStorage
+                        localStorage.setItem(CACHE_KEY, JSON.stringify(data));
+                        localStorage.setItem(TIMESTAMP_KEY, Date.now().toString());
+
+                        setPollenData(data);
+                        setCacheMeta({
+                            cached: false,
+                            stale: false,
+                            ageHours: 0,
+                            timestamp: Date.now()
+                        });
+                    } catch (err) {
+                        console.warn("Failed to fetch Google Pollen API, checking fallback options:", err);
+
+                        // 3. Fall back to stale cache if present
+                        if (cachedDataStr) {
+                            try {
+                                const staleData = JSON.parse(cachedDataStr);
+                                if (staleData && staleData.dailyInfo) {
+                                    const ts = parseInt(cachedTimestampStr || '0', 10);
+                                    const age = Date.now() - ts;
+                                    setPollenData(staleData);
+                                    setCacheMeta({
+                                        cached: true,
+                                        stale: true,
+                                        ageHours: Math.floor(age / (60 * 60 * 1000)),
+                                        timestamp: ts
+                                    });
+                                    return;
+                                }
+                            } catch (e) {
+                                console.warn("Stale cache error", e);
+                            }
+                        }
+
+                        // 4. Initial fallback if no cache exists yet (e.g. referer blocked in dev environment)
+                        const fallbackData = generateFallbackData(coords.lat, coords.lon);
+                        localStorage.setItem(CACHE_KEY, JSON.stringify(fallbackData));
+                        localStorage.setItem(TIMESTAMP_KEY, Date.now().toString());
+                        setPollenData(fallbackData);
+                        setCacheMeta({
+                            cached: false,
+                            stale: false,
+                            fallback: true,
+                            ageHours: 0,
+                            timestamp: Date.now()
+                        });
+                    } finally {
+                        setLoading(false);
+                    }
+                };
+
+                if (coords && coords.lat && coords.lon) {
+                    fetchPollen();
+                }
+            }, [coords.lat, coords.lon, refreshTrigger]);
+
+            // Discrete 5-segment color specification
+            const segments = [
+                { level: 1, hex: '#22c55e', name: 'Very Low' },
+                { level: 2, hex: '#eab308', name: 'Low' },
+                { level: 3, hex: '#f97316', name: 'Moderate' },
+                { level: 4, hex: '#ef4444', name: 'High' },
+                { level: 5, hex: '#a855f7', name: 'Very High' }
+            ];
+
+            const categories = [
+                { key: 'TREE', label: 'Tree', icon: 'trees' },
+                { key: 'GRASS', label: 'Grass', icon: 'sprout' },
+                { key: 'WEED', label: 'Weed', icon: 'wind' }
+            ];
+
+            // Helper to extract in-season active plants matching category
+            const getActivePlants = (dayInfo, categoryKey) => {
+                if (!dayInfo || !dayInfo.plantInfo) return [];
+                return dayInfo.plantInfo.filter(plant => {
+                    if (!plant.inSeason) return false;
+                    const pType = (plant.plantDescription?.type || plant.type || "").toUpperCase();
+                    return pType === categoryKey.toUpperCase();
+                });
+            };
+
+            const formatDayLabel = (dateObj, idx) => {
+                if (!dateObj) return `Day ${idx + 1}`;
+                if (idx === 0) return "Today";
+                const d = new Date(dateObj.year, dateObj.month - 1, dateObj.day);
+                return d.toLocaleDateString('en-US', { weekday: 'short' });
+            };
+
+            const formatDateSub = (dateObj) => {
+                if (!dateObj) return "";
+                const d = new Date(dateObj.year, dateObj.month - 1, dateObj.day);
+                return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            };
+
+            return (
+                <div className="pt-2">
+                    {/* Header */}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+                        <div className="flex items-center gap-2">
+                            <Icon name="flower-2" size={20} className="text-emerald-400" />
+                            <h3 className="text-xl font-semibold text-white">5-Day Pollen Forecast</h3>
+                        </div>
+
+                        {/* Status / Cache pill */}
+                        <div className="flex items-center gap-2 text-xs text-slate-400">
+                            {cacheMeta && (
+                                <span className="px-2.5 py-1 rounded-md bg-slate-800/80 border border-slate-700 text-[11px] text-slate-300 flex items-center gap-1.5 shadow-sm">
+                                    <span className={`w-2 h-2 rounded-full ${cacheMeta.stale ? 'bg-amber-400' : cacheMeta.fallback ? 'bg-blue-400' : 'bg-emerald-400'}`}></span>
+                                    {cacheMeta.cached
+                                        ? `Cached (${cacheMeta.ageHours}h old)`
+                                        : cacheMeta.fallback
+                                            ? 'Sample Data'
+                                            : 'Live API'}
+                                </span>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Cards Grid */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+                        {pollenData && pollenData.dailyInfo && pollenData.dailyInfo.length > 0 ? (
+                            pollenData.dailyInfo.slice(0, 5).map((day, idx) => {
+                                const dayName = formatDayLabel(day.date, idx);
+                                const dateSub = formatDateSub(day.date);
+
+                                return (
+                                    <div
+                                        key={idx}
+                                        className="glass-panel p-4 rounded-xl flex flex-col border border-slate-700/50 hover:border-slate-500 transition-all shadow-lg"
+                                    >
+                                        {/* Card Header: Day and Date */}
+                                        <div className="flex justify-between items-baseline mb-3 pb-2 border-b border-slate-700/60">
+                                            <span className={`text-sm font-semibold tracking-wide ${idx === 0 ? 'text-emerald-400' : 'text-slate-200'}`}>
+                                                {dayName}
+                                            </span>
+                                            <span className="text-xs text-slate-400 font-medium">
+                                                {dateSub}
+                                            </span>
+                                        </div>
+
+                                        {/* Pollen Categories */}
+                                        <div className="space-y-3.5 my-auto py-1">
+                                            {categories.map((cat) => {
+                                                // Find matching pollenTypeInfo
+                                                const typeInfo = (day.pollenTypeInfo || []).find(
+                                                    p => (p.code || "").toUpperCase() === cat.key || (p.displayName || "").toLowerCase() === cat.label.toLowerCase()
+                                                );
+                                                const upiScore = typeInfo?.indexInfo?.value ?? 0;
+                                                const categoryName = typeInfo?.indexInfo?.category || (upiScore === 0 ? 'None' : '');
+                                                const activePlants = getActivePlants(day, cat.key);
+
+                                                return (
+                                                    <div key={cat.key} className="flex items-center justify-between gap-2">
+                                                        {/* Left Side: Pollen type label with Tooltip */}
+                                                        <div className="pollen-tooltip-wrapper flex items-center gap-1.5 cursor-help hover:z-50">
+                                                            <Icon name={cat.icon} size={15} className="text-slate-400 group-hover:text-emerald-400 transition-colors" />
+                                                            <span className="text-xs font-medium text-slate-300 hover:text-white border-b border-dotted border-slate-600 hover:border-emerald-400 transition-colors">
+                                                                {cat.label}
+                                                            </span>
+
+                                                            {/* Tooltip Hover Box */}
+                                                            <div className="pollen-tooltip absolute left-0 bottom-full mb-2 flex-col z-50 w-52 p-3 bg-slate-900/95 backdrop-blur-md border border-slate-700 rounded-xl shadow-2xl text-xs">
+                                                                <div className="flex items-center justify-between border-b border-slate-700/80 pb-1.5 mb-2">
+                                                                    <span className="font-semibold text-white flex items-center gap-1.5">
+                                                                        <Icon name={cat.icon} size={13} className="text-emerald-400" />
+                                                                        {cat.label} Pollen
+                                                                    </span>
+                                                                    <span className="text-[10px] uppercase font-bold text-emerald-400/90">
+                                                                        {activePlants.length} active
+                                                                    </span>
+                                                                </div>
+
+                                                                {activePlants.length > 0 ? (
+                                                                    <ul className="space-y-1 text-slate-300 max-h-36 overflow-y-auto pr-1">
+                                                                        {activePlants.map((plant, pIdx) => (
+                                                                            <li key={pIdx} className="flex items-center gap-2 text-[11px] leading-tight">
+                                                                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0"></span>
+                                                                                <span className="truncate">{plant.displayName || plant.code}</span>
+                                                                            </li>
+                                                                        ))}
+                                                                    </ul>
+                                                                ) : (
+                                                                    <div className="text-[11px] text-slate-400 italic py-0.5">
+                                                                        None active
+                                                                    </div>
+                                                                )}
+
+                                                                {/* Arrow */}
+                                                                <div className="absolute top-full left-4 -mt-px border-4 border-transparent border-t-slate-700"></div>
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Right Side: Discrete 5-segment bar */}
+                                                        <div className="flex items-center gap-1.5" title={`UPI ${upiScore}/5 - ${categoryName}`}>
+                                                            <div className="flex items-center gap-1">
+                                                                {segments.map((seg) => {
+                                                                    const isFilled = upiScore >= seg.level;
+                                                                    return (
+                                                                        <div
+                                                                            key={seg.level}
+                                                                            className={`h-2.5 w-3.5 rounded-sm transition-all duration-200 ${isFilled
+                                                                                ? 'opacity-100 shadow-sm'
+                                                                                : 'bg-slate-700/50 opacity-30'
+                                                                                }`}
+                                                                            style={isFilled ? { backgroundColor: seg.hex } : {}}
+                                                                        />
+                                                                    );
+                                                                })}
+                                                            </div>
+                                                            <span className="text-[11px] font-mono font-medium text-slate-400 w-3 text-right">
+                                                                {upiScore}
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                );
+                            })
+                        ) : loading ? (
+                            <div className="col-span-full p-6 glass-panel rounded-xl text-center text-slate-400 flex items-center justify-center gap-2">
+                                <Icon name="loader-2" size={18} className="animate-spin text-emerald-400" />
+                                Loading pollen forecast...
+                            </div>
+                        ) : error ? (
+                            <div className="col-span-full p-4 glass-panel rounded-xl text-red-400 text-sm">
+                                {error}
+                            </div>
+                        ) : (
+                            <div className="col-span-full p-4 glass-panel rounded-xl text-slate-400">
+                                No pollen forecast data available.
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
         // --- Weather Dashboard Component ---
         const WeatherDashboard = () => {
-            const [coords, setCoords] = useState({ lat: 38.9585, lon: -95.2730 }); // Default: Lawrence, KS
+            const DEFAULT_COORDS = { lat: 38.9717, lon: -95.2353 }; // Default: Lawrence, KS
+
+            const [coords, setCoords] = useState(() => {
+                try {
+                    const saved = localStorage.getItem('weather_user_coords');
+                    if (saved) {
+                        const parsed = JSON.parse(saved);
+                        if (parsed && typeof parsed.lat === 'number' && typeof parsed.lon === 'number') {
+                            return parsed;
+                        }
+                    }
+                } catch (e) {
+                    console.warn("Could not read weather_user_coords from localStorage:", e);
+                }
+                return DEFAULT_COORDS;
+            });
+
             const [currentWeather, setCurrentWeather] = useState(null);
             const [forecast, setForecast] = useState(null);
             const [hourlyForecast, setHourlyForecast] = useState(null);
@@ -236,20 +639,56 @@
             const [refreshTrigger, setRefreshTrigger] = useState(0);
             const [mapProvider, setMapProvider] = useState('windy'); // 'nws' or 'windy'
             const [alerts, setAlerts] = useState([]);
+            const [isLocating, setIsLocating] = useState(false);
+            const [locationNotification, setLocationNotification] = useState(null);
 
-            useEffect(() => {
-                if (navigator.geolocation) {
-                    navigator.geolocation.getCurrentPosition(
-                        (position) => {
-                            setCoords({
-                                lat: position.coords.latitude,
-                                lon: position.coords.longitude
-                            });
-                        },
-                        (err) => console.warn("Location access denied, using default.", err)
-                    );
+            const showNotification = (msg, type = 'info') => {
+                setLocationNotification({ msg, type });
+                setTimeout(() => {
+                    setLocationNotification(null);
+                }, 4000);
+            };
+
+            const handleGetLocation = () => {
+                if (!navigator.geolocation) {
+                    showNotification("Geolocation is not supported by your browser.", "error");
+                    return;
                 }
-            }, []);
+
+                setIsLocating(true);
+                showNotification("Requesting location from device...", "info");
+
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        const newCoords = {
+                            lat: position.coords.latitude,
+                            lon: position.coords.longitude
+                        };
+                        setCoords(newCoords);
+                        try {
+                            localStorage.setItem('weather_user_coords', JSON.stringify(newCoords));
+                        } catch (e) {
+                            console.warn("Failed to persist weather_user_coords", e);
+                        }
+                        // Clear pollen cache for previous location so fresh data is fetched
+                        try {
+                            localStorage.removeItem('pollen_data_cache');
+                            localStorage.removeItem('pollen_data_timestamp');
+                        } catch (e) { }
+
+                        setRefreshTrigger(prev => prev + 1);
+                        setIsLocating(false);
+                        showNotification("Location updated successfully!", "success");
+                    },
+                    (err) => {
+                        console.warn("Location access denied or failed, falling back to Lawrence, KS:", err);
+                        setCoords(DEFAULT_COORDS);
+                        setIsLocating(false);
+                        showNotification("Location access denied. Using Lawrence, KS default.", "warning");
+                    },
+                    { timeout: 10000, enableHighAccuracy: true }
+                );
+            };
 
             useEffect(() => {
                 const fetchNWSData = async () => {
@@ -425,32 +864,71 @@
             }
 
             return (
-                <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto space-y-6">
+                <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto space-y-6 relative">
+
+                    {/* Lightweight Notification Toast */}
+                    {locationNotification && (
+                        <div className={`fixed top-20 right-6 z-50 flex items-center gap-2.5 px-4 py-3 rounded-xl border shadow-2xl backdrop-blur-md transition-all duration-300 text-sm ${locationNotification.type === 'success'
+                            ? 'bg-emerald-950/90 border-emerald-500/50 text-emerald-200 shadow-emerald-950/50'
+                            : locationNotification.type === 'warning'
+                                ? 'bg-amber-950/90 border-amber-500/50 text-amber-200 shadow-amber-950/50'
+                                : locationNotification.type === 'error'
+                                    ? 'bg-red-950/90 border-red-500/50 text-red-200 shadow-red-950/50'
+                                    : 'bg-slate-800/95 border-slate-700 text-slate-200 shadow-slate-950/50'
+                            }`}>
+                            <Icon
+                                name={
+                                    locationNotification.type === 'success' ? 'check-circle-2' :
+                                        locationNotification.type === 'warning' ? 'alert-triangle' :
+                                            locationNotification.type === 'error' ? 'alert-circle' : 'info'
+                                }
+                                size={18}
+                                className={
+                                    locationNotification.type === 'success' ? 'text-emerald-400' :
+                                        locationNotification.type === 'warning' ? 'text-amber-400' :
+                                            locationNotification.type === 'error' ? 'text-red-400' : 'text-blue-400'
+                                }
+                            />
+                            <span className="font-medium">{locationNotification.msg}</span>
+                        </div>
+                    )}
 
                     {/* Header */}
-                    <header className="flex flex-col md:flex-row justify-between items-start md:items-end pb-4 border-b border-slate-700 gap-4">
-                        <div>
-                            <h1 className="text-3xl font-bold text-white flex items-center gap-2">
-                                <Icon name="cloud-lightning" className="text-blue-400" />
-                                And Now... The Weather
-                            </h1>
-                            <p className="text-slate-400 flex items-center gap-2 text-sm mt-1">
-                                <Icon name="map-pin" size={14} />
-                                {coords.lat.toFixed(2)}°N, {coords.lon.toFixed(2)}°W
-                            </p>
-                        </div>
-                        <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-end">
-                            <button
-                                onClick={handleRefresh}
-                                className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm rounded-lg transition-colors border border-slate-700"
-                            >
-                                <Icon name="refresh-cw" size={16} />
-                                Refresh
-                            </button>
-                            <div className="text-right hidden md:block">
-                                <p className="text-slate-400 text-xs">Primary Source:</p>
-                                <p className="text-xs font-semibold text-blue-300">weather.gov (API)</p>
+                    <header className="flex flex-col md:flex-row justify-between items-start md:items-center pb-4 border-b border-slate-700 gap-4">
+                        <div className="flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6">
+                            <div>
+                                <h1 className="text-3xl font-bold text-white flex items-center gap-2">
+                                    <Icon name="cloud-lightning" className="text-blue-400" />
+                                    And Now... The Weather
+                                </h1>
+                                <p className="text-slate-400 flex items-center gap-2 text-sm mt-1">
+                                    <Icon name="map-pin" size={14} />
+                                    {coords.lat.toFixed(4)}°N, {coords.lon.toFixed(4)}°W
+                                </p>
                             </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={handleRefresh}
+                                    className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm rounded-lg transition-colors border border-slate-700 shadow-sm"
+                                    title="Refresh weather data"
+                                >
+                                    <Icon name="refresh-cw" size={16} />
+                                    Refresh
+                                </button>
+                                <button
+                                    onClick={handleGetLocation}
+                                    disabled={isLocating}
+                                    className="flex items-center justify-center p-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition-colors border border-slate-700 shadow-sm hover:text-white disabled:opacity-50"
+                                    title="Get current location"
+                                    aria-label="Get current location"
+                                >
+                                    <Icon name={isLocating ? "loader-2" : "map"} size={16} className={isLocating ? "animate-spin text-blue-400" : ""} />
+                                </button>
+                            </div>
+                        </div>
+                        <div className="text-right hidden md:block">
+                            <p className="text-slate-400 text-xs">Primary Source:</p>
+                            <p className="text-xs font-semibold text-blue-300">weather.gov (API)</p>
                         </div>
                     </header>
 
@@ -647,6 +1125,9 @@
                             )}
                         </div>
                     </div>
+
+                    {/* Pollen Forecast Section */}
+                    <PollenForecast coords={coords} refreshTrigger={refreshTrigger} />
                 </div>
             );
         };
