@@ -254,8 +254,6 @@
             const TIMESTAMP_KEY = 'pollen_data_timestamp';
             const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
-            const GOOGLE_API_KEY = "AIzaSyBHWnoSE6i_sguG9W2MKI1tU08wI1IJhdo";
-
             // Fallback sample generator if API network call fails and no cache is present yet
             const generateFallbackData = (lat, lon) => {
                 const days = [];
@@ -357,13 +355,12 @@
                         }
                     }
 
-                    // 2. Fetch fresh data from Google Pollen API endpoint
+                    // 2. Fetch fresh data via Cloudflare Pages serverless proxy (/api/pollen)
                     try {
-                        const apiKey = localStorage.getItem('google_pollen_api_key') || GOOGLE_API_KEY;
-                        const url = `https://pollen.googleapis.com/v1/forecast:lookup?key=${apiKey}&location.latitude=${coords.lat}&location.longitude=${coords.lon}&days=5&languageCode=en`;
+                        const url = `/api/pollen?lat=${coords.lat}&lon=${coords.lon}`;
                         const res = await fetch(url);
                         if (!res.ok) {
-                            throw new Error(`Google Pollen API responded with HTTP ${res.status}`);
+                            throw new Error(`Pollen API proxy responded with HTTP ${res.status}`);
                         }
                         const data = await res.json();
                         if (!data.dailyInfo || data.dailyInfo.length === 0) {
