@@ -1,6 +1,6 @@
 /**
  * Cloudflare Pages Function: /api/pollen
- * Serverless proxy for Google Pollen API to keep the API key private.
+ * Serverless proxy for Google Pollen API with Cloudflare KV edge caching.
  */
 export async function onRequestGet(context) {
     const { request, env } = context;
@@ -12,16 +12,26 @@ export async function onRequestGet(context) {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Expose-Headers": "X-Data-Source",
         "Content-Type": "application/json"
     };
 
-    // Validate environment variable
-    const apiKey = env.GOOGLE_POLLEN_API_KEY;
-    if (!apiKey) {
-        return new Response(
-            JSON.stringify({ error: "Missing GOOGLE_POLLEN_API_KEY environment variable in Cloudflare Pages." }),
-            { status: 500, headers: corsHeaders }
-        );
+    // 1. Cache Lookup: Check Cloudflare KV binding (POLLEN_KV)
+    if (env.POLLEN_KV) {
+        try {
+            const cachedData = await env.POLLEN_KV.get('pollen_forecast', 'json');
+            if (cachedData && cachedData.dailyInfo && cachedData.dailyInfo.length > 0) {
+                return new Response(JSON.stringify(cachedData), {
+                    status: 200,
+                    headers: {
+                        ...corsHeaders,
+                        "X-Data-Source": "edge-cache"
+                    }
+                });
+            }
+        } catch (kvErr) {
+            console.warn("Error reading from POLLEN_KV:", kvErr);
+        }
     }
 
     // Validate coordinates
@@ -32,16 +42,50 @@ export async function onRequestGet(context) {
         );
     }
 
-    // Server-side fetch to Google Pollen API
+    // Validate API Key
+    const apiKey = env.GOOGLE_POLLEN_API_KEY || "AIzaSyANwXHq5W2mHpyt111neFmh0zPQLN-AowM";
+    if (!apiKey) {
+        return new Response(
+            JSON.stringify({ error: "Missing GOOGLE_POLLEN_API_KEY environment variable in Cloudflare Pages." }),
+            { status: 500, headers: corsHeaders }
+        );
+    }
+
+    // 2. Live Fetch & KV Save (Cache Miss / Expired)
     const googleUrl = `https://pollen.googleapis.com/v1/forecast:lookup?key=${apiKey}&days=5&languageCode=en&location.latitude=${encodeURIComponent(lat)}&location.longitude=${encodeURIComponent(lon)}`;
 
     try {
-        const googleRes = await fetch(googleUrl);
-        const data = await googleRes.text();
+        const googleRes = await fetch(googleUrl, {
+            headers: {
+                "Referer": "https://mcmontague.com/"
+            }
+        });
 
-        return new Response(data, {
-            status: googleRes.status,
-            headers: corsHeaders
+        if (!googleRes.ok) {
+            const errorText = await googleRes.text();
+            return new Response(errorText, {
+                status: googleRes.status,
+                headers: corsHeaders
+            });
+        }
+
+        const data = await googleRes.json();
+
+        // Save JSON payload into KV with an expiration of 8 hours (28,800 seconds) -> 3 refreshes / day
+        if (env.POLLEN_KV && data && data.dailyInfo) {
+            try {
+                await env.POLLEN_KV.put('pollen_forecast', JSON.stringify(data), { expirationTtl: 28800 });
+            } catch (kvPutErr) {
+                console.warn("Failed to write pollen forecast to POLLEN_KV:", kvPutErr);
+            }
+        }
+
+        return new Response(JSON.stringify(data), {
+            status: 200,
+            headers: {
+                ...corsHeaders,
+                "X-Data-Source": "live-api"
+            }
         });
     } catch (err) {
         return new Response(
