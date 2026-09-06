@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NWS Official Weather Dashboard</title>
+    <title>Mitch's Dashboard</title>
 
     <!-- React & ReactDOM -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -762,12 +762,50 @@
                 setRefreshTrigger(prev => prev + 1);
             };
 
-            const getAqiColor = (val) => {
-                if (val <= 50) return 'bg-emerald-500';
-                if (val <= 100) return 'bg-yellow-500';
-                if (val <= 150) return 'bg-orange-500';
-                if (val <= 200) return 'bg-red-500';
-                return 'bg-purple-500';
+            const getAqiTheme = (val) => {
+                if (val >= 200) {
+                    return {
+                        bar: 'bg-purple-500',
+                        border: 'border-purple-500/70',
+                        bg: 'bg-purple-950/40',
+                        text: 'text-purple-300',
+                        glow: 'shadow-[0_0_15px_rgba(168,85,247,0.25)]'
+                    };
+                }
+                if (val >= 150) {
+                    return {
+                        bar: 'bg-red-500',
+                        border: 'border-red-500/70',
+                        bg: 'bg-red-950/40',
+                        text: 'text-red-400',
+                        glow: 'shadow-[0_0_15px_rgba(239,68,68,0.2)]'
+                    };
+                }
+                if (val >= 100) {
+                    return {
+                        bar: 'bg-orange-500',
+                        border: 'border-orange-500/70',
+                        bg: 'bg-orange-950/40',
+                        text: 'text-orange-400',
+                        glow: 'shadow-[0_0_15px_rgba(249,115,22,0.2)]'
+                    };
+                }
+                if (val > 50) {
+                    return {
+                        bar: 'bg-yellow-500',
+                        border: 'border-slate-700',
+                        bg: 'bg-slate-800/50',
+                        text: 'text-white',
+                        glow: ''
+                    };
+                }
+                return {
+                    bar: 'bg-emerald-500',
+                    border: 'border-slate-700',
+                    bg: 'bg-slate-800/50',
+                    text: 'text-white',
+                    glow: ''
+                };
             };
 
             if (loading) {
@@ -815,6 +853,66 @@
             const curWeatherInfo = getNWSWeatherInfo(curWeatherText, isDaytime);
 
             const currentAqiValue = aqi?.current?.us_aqi || 0;
+            const aqiTheme = getAqiTheme(currentAqiValue);
+
+            // Relative Humidity (weather.gov)
+            const curHumidity = currentWeather?.relativeHumidity?.value != null
+                ? currentWeather.relativeHumidity.value
+                : (hourlyForecast && hourlyForecast[0]?.relativeHumidity?.value != null ? hourlyForecast[0].relativeHumidity.value : null);
+
+            // Heat Index (weather.gov, with NWS Rothfusz formula fallback if temp >= 80°F)
+            let curHeatIndexF = currentWeather?.heatIndex?.value != null ? cToF(currentWeather.heatIndex.value) : null;
+            if (curHeatIndexF == null && curTempF != null && curTempF >= 80 && curHumidity != null) {
+                const T = curTempF;
+                const RH = curHumidity;
+                let HI = 0.5 * (T + 61.0 + ((T - 68.0) * 1.2) + (RH * 0.094));
+                if (HI >= 80) {
+                    HI = -42.379 + 2.04901523 * T + 10.14333127 * RH - 0.22475541 * T * RH - 0.00683783 * T * T - 0.05481717 * RH * RH + 0.00122874 * T * T * RH + 0.00085282 * T * RH * RH - 0.00000199 * T * T * RH * RH;
+                }
+                curHeatIndexF = HI;
+            }
+
+            // Wind Chill (weather.gov, with NWS standard formula fallback if temp <= 50°F and wind >= 3 mph)
+            let curWindChillF = currentWeather?.windChill?.value != null ? cToF(currentWeather.windChill.value) : null;
+            if (curWindChillF == null && curTempF != null && curTempF <= 50 && curWindMph >= 3) {
+                const T = curTempF;
+                const V = curWindMph;
+                curWindChillF = 35.74 + (0.6215 * T) - (35.75 * Math.pow(V, 0.16)) + (0.4275 * T * Math.pow(V, 0.16));
+            }
+
+            // Combined Feels Like (Cold: Wind Chill, Hot: Heat Index, Mild: Similar to actual)
+            let feelsLikeTemp = null;
+            let feelsLikeSubtext = "Similar to actual";
+            let feelsLikeIcon = "thermometer";
+            let feelsLikeColor = "text-emerald-400";
+            let feelsLikeIsRed = false;
+
+            if (curTempF != null && curTempF <= 50 && curWindChillF != null) {
+                feelsLikeTemp = Math.round(curWindChillF);
+                feelsLikeSubtext = "Wind Chill";
+                feelsLikeIcon = "thermometer-snowflake";
+                if (curWindChillF < 10) {
+                    feelsLikeIsRed = true;
+                    feelsLikeColor = "text-red-400";
+                } else {
+                    feelsLikeColor = "text-cyan-300";
+                }
+            } else if (curTempF != null && curTempF >= 80 && curHeatIndexF != null) {
+                feelsLikeTemp = Math.round(curHeatIndexF);
+                feelsLikeSubtext = "Heat Index";
+                feelsLikeIcon = "thermometer-sun";
+                if (curHeatIndexF > 100) {
+                    feelsLikeIsRed = true;
+                    feelsLikeColor = "text-red-400";
+                } else {
+                    feelsLikeColor = "text-amber-400";
+                }
+            } else if (curTempF != null) {
+                feelsLikeTemp = Math.round(curTempF);
+                feelsLikeSubtext = "Similar to actual";
+                feelsLikeIcon = "thermometer";
+                feelsLikeColor = "text-emerald-400";
+            }
 
             // Hourly (First 10 hours)
             const next10Hours = hourlyForecast ? hourlyForecast.slice(0, 10) : [];
@@ -967,24 +1065,62 @@
                                 </div>
                             </div>
 
-                            <div className="space-y-4 mt-6">
+                            <div className="space-y-3 mt-6">
                                 {/* AQI Indicator */}
-                                <div className="bg-slate-800/50 p-3 rounded-lg border border-slate-700">
+                                <div className={`p-3 rounded-lg border transition-all ${aqiTheme.bg} ${aqiTheme.border} ${aqiTheme.glow}`}>
                                     <div className="flex justify-between items-center mb-2">
-                                        <span className="text-sm text-slate-400 flex items-center gap-2">
+                                        <span className={`text-sm flex items-center gap-2 ${currentAqiValue >= 100 ? aqiTheme.text : 'text-slate-400'}`}>
                                             <Icon name="wind" size={16} /> Air Quality (US AQI)
                                         </span>
-                                        <span className="font-bold text-white">{currentAqiValue}</span>
+                                        <span className={`font-bold ${currentAqiValue >= 100 ? aqiTheme.text : 'text-white'}`}>{currentAqiValue}</span>
                                     </div>
                                     <div className="w-full bg-slate-700 h-2 rounded-full overflow-hidden">
                                         <div
-                                            className={`h-full ${getAqiColor(currentAqiValue)}`}
+                                            className={`h-full ${aqiTheme.bar}`}
                                             style={{ width: `${Math.min(currentAqiValue, 300) / 3}%` }}
                                         ></div>
                                     </div>
                                     <p className="text-xs text-slate-500 mt-1 text-right">
                                         Data: Open-Meteo/AirNow
                                     </p>
+                                </div>
+
+                                {/* Humidity Gauge */}
+                                <div className="bg-slate-800/50 p-3 rounded-lg border border-slate-700">
+                                    <div className="flex justify-between items-center mb-2">
+                                        <span className="text-sm text-slate-400 flex items-center gap-2">
+                                            <Icon name="droplets" size={16} className="text-cyan-400" /> Humidity
+                                        </span>
+                                        <span className="font-bold text-white">
+                                            {curHumidity != null ? `${Math.round(curHumidity)}%` : "N/A"}
+                                        </span>
+                                    </div>
+                                    <div className="w-full bg-slate-700 h-2 rounded-full overflow-hidden">
+                                        <div
+                                            className="h-full bg-gradient-to-r from-blue-400 to-cyan-400 transition-all duration-500"
+                                            style={{ width: `${curHumidity != null ? Math.min(Math.max(curHumidity, 0), 100) : 0}%` }}
+                                        ></div>
+                                    </div>
+                                    <p className="text-xs text-slate-500 mt-1 text-right">
+                                        Data: weather.gov
+                                    </p>
+                                </div>
+
+                                {/* Combined Feels Like Tile */}
+                                <div className={`flex justify-between items-center p-3 rounded-lg border transition-all ${feelsLikeIsRed
+                                    ? 'bg-red-950/40 border-red-500/70 shadow-[0_0_15px_rgba(239,68,68,0.2)]'
+                                    : 'bg-slate-800/50 border-slate-700'
+                                    }`}>
+                                    <div className="flex items-center gap-2.5">
+                                        <Icon name={feelsLikeIcon} size={18} className={feelsLikeColor} />
+                                        <div className="flex flex-col">
+                                            <span className={`text-sm font-medium ${feelsLikeIsRed ? 'text-red-200' : 'text-slate-200'}`}>Feels Like</span>
+                                            <span className={`text-[11px] ${feelsLikeIsRed ? 'text-red-300 font-semibold' : 'text-slate-400'}`}>{feelsLikeSubtext}</span>
+                                        </div>
+                                    </div>
+                                    <span className={`text-xl font-bold ${feelsLikeIsRed ? 'text-red-400' : 'text-white'}`}>
+                                        {feelsLikeTemp !== null ? `${feelsLikeTemp}°` : "--"}
+                                    </span>
                                 </div>
 
                                 {/* Wind Speed & Dew Point */}
