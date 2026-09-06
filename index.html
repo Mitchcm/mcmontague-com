@@ -249,10 +249,10 @@
             const [error, setError] = useState(null);
             const [cacheMeta, setCacheMeta] = useState(null);
 
-            // Strict caching constants
+            // Strict caching constants (8 hours = 3 times daily)
             const CACHE_KEY = 'pollen_data_cache';
             const TIMESTAMP_KEY = 'pollen_data_timestamp';
-            const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+            const CACHE_TTL = 8 * 60 * 60 * 1000; // 8 hours (3 times daily)
 
             // Fallback sample generator if API network call fails and no cache is present yet
             const generateFallbackData = (lat, lon) => {
@@ -320,7 +320,7 @@
                         plantInfo: samplePlants
                     });
                 }
-                return { dailyInfo: days };
+                return { dailyInfo: days, isFallback: true };
             };
 
             useEffect(() => {
@@ -331,14 +331,14 @@
                     const cachedDataStr = localStorage.getItem(CACHE_KEY);
                     const cachedTimestampStr = localStorage.getItem(TIMESTAMP_KEY);
 
-                    // 1. Check if valid cache exists and is less than 24h old (Strict Caching)
+                    // 1. Check if valid cache exists and is less than 8h old (Strict Caching: 3x daily)
                     if (cachedDataStr && cachedTimestampStr) {
                         const timestamp = parseInt(cachedTimestampStr, 10);
                         const age = Date.now() - timestamp;
                         if (!isNaN(timestamp) && age < CACHE_TTL) {
                             try {
                                 const parsed = JSON.parse(cachedDataStr);
-                                if (parsed && parsed.dailyInfo && parsed.dailyInfo.length > 0) {
+                                if (parsed && parsed.dailyInfo && parsed.dailyInfo.length > 0 && !parsed.isFallback) {
                                     setPollenData(parsed);
                                     setCacheMeta({
                                         cached: true,
@@ -1142,6 +1142,7 @@
 
             const quickLinks = [
                 { name: "Weatherwise", url: "https://web.weatherwise.app/#map=6.89/38.536/-96.801" },
+                { name: "DeepMind WeatherLab", url: "https://deepmind.google.com/science/weatherlab" },
                 { name: "Lawrence Snow Page", url: "https://lawrenceks.gov/snow/" },
                 { name: "Lawrence Snow Plow Map", url: "https://cloud.samsara.com/o/8005241/live_share/coverage_map/Uyn3pxy4RkeXPZZ3gDAN?duration=1800&bounds=38.893307%2C-95.370546%2C39.039723%2C-95.149274&z=13" },
                 { name: "Lawrence Atlas", url: "https://atlas.lawrenceks.gov/" },
