@@ -42,8 +42,8 @@ export async function onRequestGet(context) {
         );
     }
 
-    // Validate API Key
-    const apiKey = env.GOOGLE_POLLEN_API_KEY || "AIzaSyANwXHq5W2mHpyt111neFmh0zPQLN-AowM";
+    // Validate API Key from Cloudflare environment
+    const apiKey = env.GOOGLE_POLLEN_API_KEY;
     if (!apiKey) {
         return new Response(
             JSON.stringify({ error: "Missing GOOGLE_POLLEN_API_KEY environment variable in Cloudflare Pages." }),
