@@ -2,6 +2,9 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "mcmontague-com",
   "compatibility_date": "2025-02-04",
+  "assets": {
+    "directory": "."
+  },
   "kv_namespaces": [
     {
       "binding": "POLLEN_KV",
