@@ -8,16 +8,20 @@ export async function onRequestGet(context) {
     const lat = url.searchParams.get("lat");
     const lon = url.searchParams.get("lon");
 
+    const forceRefresh = url.searchParams.get("force") === "true" ||
+        url.searchParams.get("refresh") === "true" ||
+        request.headers.get("Cache-Control") === "no-cache";
+
     const corsHeaders = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Allow-Headers": "Content-Type, Cache-Control",
         "Access-Control-Expose-Headers": "X-Data-Source",
         "Content-Type": "application/json"
     };
 
-    // 1. Cache Lookup: Check Cloudflare KV binding (POLLEN_KV)
-    if (env.POLLEN_KV) {
+    // 1. Cache Lookup: Check Cloudflare KV binding (POLLEN_KV) unless force refresh requested
+    if (!forceRefresh && env.POLLEN_KV) {
         try {
             const cachedData = await env.POLLEN_KV.get('pollen_forecast', 'json');
             if (cachedData && cachedData.dailyInfo && cachedData.dailyInfo.length > 0) {
@@ -84,6 +88,7 @@ export async function onRequestGet(context) {
             status: 200,
             headers: {
                 ...corsHeaders,
+                "Cache-Control": "no-cache, no-store, must-revalidate",
                 "X-Data-Source": "live-api"
             }
         });
@@ -104,7 +109,7 @@ export async function onRequestOptions() {
         headers: {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type"
+            "Access-Control-Allow-Headers": "Content-Type, Cache-Control"
         }
     });
 }
