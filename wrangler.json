@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mcmontague-com",
+  "compatibility_date": "2025-02-04",
+  "kv_namespaces": [
+    {
+      "binding": "POLLEN_KV",
+      "id": "2f13fab4b5fe4765a7583529207d551e"
+    }
+  ]
+}
