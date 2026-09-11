@@ -8,22 +8,31 @@ export async function onRequestGet(context) {
     const lat = url.searchParams.get("lat");
     const lon = url.searchParams.get("lon");
 
-    const forceRefresh = url.searchParams.get("force") === "true" ||
-        url.searchParams.get("refresh") === "true" ||
-        request.headers.get("Cache-Control") === "no-cache";
-
     const corsHeaders = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Cache-Control",
+        "Access-Control-Allow-Headers": "Content-Type",
         "Access-Control-Expose-Headers": "X-Data-Source",
         "Content-Type": "application/json"
     };
 
-    // 1. Cache Lookup: Check Cloudflare KV binding (POLLEN_KV) unless force refresh requested
-    if (!forceRefresh && env.POLLEN_KV) {
+    // Validate coordinates
+    const latNum = parseFloat(lat);
+    const lonNum = parseFloat(lon);
+    if (!lat || !lon || isNaN(latNum) || isNaN(lonNum)) {
+        return new Response(
+            JSON.stringify({ error: "Invalid or missing lat and lon query parameters." }),
+            { status: 400, headers: corsHeaders }
+        );
+    }
+
+    // Cache key specific to location rounded to 2 decimals (~1.1km resolution)
+    const cacheKey = `pollen_${latNum.toFixed(2)}_${lonNum.toFixed(2)}`;
+
+    // 1. Cache Lookup: Check Cloudflare KV binding (POLLEN_KV)
+    if (env.POLLEN_KV) {
         try {
-            const cachedData = await env.POLLEN_KV.get('pollen_forecast', 'json');
+            const cachedData = await env.POLLEN_KV.get(cacheKey, 'json');
             if (cachedData && cachedData.dailyInfo && cachedData.dailyInfo.length > 0) {
                 return new Response(JSON.stringify(cachedData), {
                     status: 200,
@@ -36,14 +45,6 @@ export async function onRequestGet(context) {
         } catch (kvErr) {
             console.warn("Error reading from POLLEN_KV:", kvErr);
         }
-    }
-
-    // Validate coordinates
-    if (!lat || !lon || isNaN(parseFloat(lat)) || isNaN(parseFloat(lon))) {
-        return new Response(
-            JSON.stringify({ error: "Invalid or missing lat and lon query parameters." }),
-            { status: 400, headers: corsHeaders }
-        );
     }
 
     // Validate API Key from Cloudflare environment
@@ -78,7 +79,7 @@ export async function onRequestGet(context) {
         // Save JSON payload into KV with an expiration of 8 hours (28,800 seconds) -> 3 refreshes / day
         if (env.POLLEN_KV && data && data.dailyInfo) {
             try {
-                await env.POLLEN_KV.put('pollen_forecast', JSON.stringify(data), { expirationTtl: 28800 });
+                await env.POLLEN_KV.put(cacheKey, JSON.stringify(data), { expirationTtl: 28800 });
             } catch (kvPutErr) {
                 console.warn("Failed to write pollen forecast to POLLEN_KV:", kvPutErr);
             }
@@ -88,7 +89,6 @@ export async function onRequestGet(context) {
             status: 200,
             headers: {
                 ...corsHeaders,
-                "Cache-Control": "no-cache, no-store, must-revalidate",
                 "X-Data-Source": "live-api"
             }
         });
@@ -109,7 +109,7 @@ export async function onRequestOptions() {
         headers: {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Cache-Control"
+            "Access-Control-Allow-Headers": "Content-Type"
         }
     });
 }
