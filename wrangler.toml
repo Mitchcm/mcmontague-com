@@ -1,0 +1,20 @@
+name = "mcmontague-com"
+main = "src/index.js"
+compatibility_date = "2024-09-01"
+
+# Static assets configuration
+# Workers Static Assets serves static files from the specified directory
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# KV Namespace binding for pollen data caching
+[[kv_namespaces]]
+binding = "POLLEN_KV"
+id = "2f13fab4b5fe4765a7583529207d551e"
+
+# Custom domain routing
+routes = [
+  { pattern = "www.mcmontague.com/*", zone_name = "mcmontague.com" },
+  { pattern = "mcmontague.com/*", zone_name = "mcmontague.com" }
+]
